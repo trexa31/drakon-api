@@ -1,13 +1,18 @@
 <?php
 /**
- * Casino Wallet API
- * Güvenli, idempotent, race-condition korumalı versiyon
+ * Casino Wallet API - Trexa Entegrasyonu
+ * Güvenli, idempotent, race-condition korumalı
  */
+
+// Hata çıktısını kapat — JSON bozulmasın
+ini_set('display_errors', 0);
+ini_set('display_startup_errors', 0);
+error_reporting(0);
 
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, X-Signature');
+header('Access-Control-Allow-Headers: Content-Type, X-Signature, X-Agent-Token');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
@@ -15,18 +20,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // =======================================================
-// YAPILANDIRMA - Bu değerleri .env veya config dosyasına taşı
+// YAPILANDIRMA
 // =======================================================
-define('DB_HOST',     'sql206.infinityfree.com');
-define('DB_NAME',     'if0_41958317_c4k');
-define('DB_USER',     'if0_41958317');
-define('DB_PASS',     'fMvWLgjJWSf');
-define('DB_CHARSET',  'utf8mb4');
+$config = [
+    'db_host'      => 'sql206.infinityfree.com',
+    'db_name'      => 'if0_41958317_c4k',
+    'db_user'      => 'if0_41958317',
+    'db_pass'      => 'fMvWLgjJWSf',
+    'db_charset'   => 'utf8mb4',
 
-// Sağlayıcıdan gelen istekleri doğrulamak için shared secret
-if (!defined('SHARED_SECRET')) {
-    define('Az1SoO4yj23TZISfOa027i6q56qM3Nyg', '');  // Sağlayıcı key varsa buraya yaz, yoksa boş bırak
-}
+    // Trexa API bilgileri
+    'agent_code'   => 'trexa',
+    'agent_token'  => 'DD7rYRIt5bug1Kxqi01NlX39RV1YsJPl',
+    'secret_key'   => 'Az1SoO4yj23TZISfOa027i6q56qM3Nyg',
+];
 
 // =======================================================
 // YARDIMCI: JSON çıktısı verip çık
@@ -34,43 +41,47 @@ if (!defined('SHARED_SECRET')) {
 function respond(array $data, int $httpCode = 200): void
 {
     http_response_code($httpCode);
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit();
 }
 
 // =======================================================
-// OPSİYONEL İMZA DOĞRULAMA
+// BODY OKU
 // =======================================================
-if (!empty(SHARED_SECRET)) {
-    $signature = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
-    $rawBody    = file_get_contents('php://input');
-    $expected   = hash_hmac('sha256', $rawBody, SHARED_SECRET);
-    if (!hash_equals($expected, strtolower($signature))) {
-        respond(['error' => 'Unauthorized', 'balance' => '0.00', 'currency_code' => 'TRY'], 401);
-    }
-    $input = json_decode($rawBody, true);
-} else {
-    $input = json_decode(file_get_contents('php://input'), true);
-}
+$rawBody = file_get_contents('php://input');
+$input   = json_decode($rawBody, true);
 
-// =======================================================
-// GİRİŞ DOĞRULAMA
-// =======================================================
 if (!is_array($input)) {
-    respond(['error' => 'Invalid JSON body', 'balance' => '0.00', 'currency_code' => 'TRY'], 400);
+    respond(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'Invalid JSON body'], 400);
 }
 
-$rawUserId     = isset($input['user_id'])       ? trim((string)$input['user_id']) : '';
-$username      = isset($input['username'])      ? trim($input['username'])        : '';
-$method        = isset($input['method'])        ? trim($input['method'])          : 'user_balance';
-$currency      = isset($input['currency_code']) ? trim($input['currency_code'])   : 'TRY';
-$transactionId = isset($input['transaction_id'])? trim((string)$input['transaction_id']) : '';
+// =======================================================
+// İMZA DOĞRULAMA (Trexa secret_key ile)
+// Trexa genellikle agent_token veya HMAC gönderir.
+// Header'da X-Signature varsa doğrula, yoksa geç.
+// =======================================================
+$signature = $_SERVER['HTTP_X_SIGNATURE'] ?? '';
+if (!empty($signature)) {
+    $expected = hash_hmac('sha256', $rawBody, $config['secret_key']);
+    if (!hash_equals($expected, strtolower($signature))) {
+        respond(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'Unauthorized'], 401);
+    }
+}
+
+// =======================================================
+// GİRİŞ PARAMETRELERİ
+// =======================================================
+$rawUserId     = isset($input['user_id'])        ? trim((string)$input['user_id']) : '';
+$username      = isset($input['username'])       ? trim($input['username'])        : '';
+$method        = isset($input['method'])         ? trim($input['method'])          : 'user_balance';
+$currency      = isset($input['currency_code'])  ? trim($input['currency_code'])   : 'TRY';
+$transactionId = isset($input['transaction_id']) ? trim((string)$input['transaction_id']) : '';
 
 $betAmount = 0.0;
 $winAmount = 0.0;
 
 if (isset($input['bet']))    $betAmount = (float)$input['bet'];
-if (isset($input['amount'])) $betAmount = (float)$input['amount'];   // bazı sağlayıcılar 'amount' gönderir
+if (isset($input['amount'])) $betAmount = (float)$input['amount'];
 if (isset($input['win']))    $winAmount = (float)$input['win'];
 
 // =======================================================
@@ -79,18 +90,18 @@ if (isset($input['win']))    $winAmount = (float)$input['win'];
 try {
     $dsn = sprintf(
         'mysql:host=%s;dbname=%s;charset=%s',
-        DB_HOST, DB_NAME, DB_CHARSET
+        $config['db_host'],
+        $config['db_name'],
+        $config['db_charset']
     );
-    $options = [
+    $pdo = new PDO($dsn, $config['db_user'], $config['db_pass'], [
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES   => false,
-    ];
-    $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+    ]);
 } catch (PDOException $e) {
-    // Gerçek hata mesajını dışarıya sızdırma
     error_log('[WalletAPI] DB bağlantı hatası: ' . $e->getMessage());
-    respond(['error' => 'Database connection failed', 'balance' => '0.00', 'currency_code' => $currency], 500);
+    respond(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'Database connection failed'], 500);
 }
 
 // =======================================================
@@ -99,14 +110,12 @@ try {
 $user = null;
 
 try {
-    // Önce sayısal ID ile ara
     if (is_numeric($rawUserId) && (int)$rawUserId > 0) {
         $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id LIMIT 1");
         $stmt->execute(['id' => (int)$rawUserId]);
         $user = $stmt->fetch();
     }
 
-    // Bulunamadıysa kullanıcı adı ile ara
     if (!$user) {
         $searchName = !empty($username) ? $username : $rawUserId;
         if (!empty($searchName)) {
@@ -117,17 +126,17 @@ try {
     }
 } catch (PDOException $e) {
     error_log('[WalletAPI] Kullanıcı sorgulama hatası: ' . $e->getMessage());
-    respond(['error' => 'Query error', 'balance' => '0.00', 'currency_code' => $currency], 500);
+    respond(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'Query error'], 500);
 }
 
 if (!$user) {
-    respond(['error' => 'User not found', 'balance' => '0.00', 'currency_code' => $currency, 'status' => 'USER_NOT_FOUND'], 404);
+    respond(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'User not found'], 404);
 }
 
 $realUserId = (int)$user['id'];
 
 // =======================================================
-// SADECE BAKİYE SORGULAMA (user_balance)
+// SADECE BAKİYE SORGULAMA
 // =======================================================
 if ($method === 'user_balance') {
     respond([
@@ -137,22 +146,21 @@ if ($method === 'user_balance') {
 }
 
 // =======================================================
-// İŞLEM TABLOSU YOKSA OTOMATİK OLUŞTUR
-// (İlk kurulumda çalışır, sonra devre dışı bırakabilirsin)
+// İŞLEM TABLOSU OTOMATİK OLUŞTUR
 // =======================================================
 try {
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS wallet_transactions (
             id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            transaction_id VARCHAR(255)   NOT NULL,
-            user_id        INT UNSIGNED   NOT NULL,
-            method         VARCHAR(50)    NOT NULL,
-            bet_amount     DECIMAL(18,2)  NOT NULL DEFAULT 0.00,
-            win_amount     DECIMAL(18,2)  NOT NULL DEFAULT 0.00,
-            balance_before DECIMAL(18,2)  NOT NULL,
-            balance_after  DECIMAL(18,2)  NOT NULL,
-            currency       VARCHAR(10)    NOT NULL DEFAULT 'TRY',
-            created_at     DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            transaction_id VARCHAR(255)  NOT NULL,
+            user_id        INT UNSIGNED  NOT NULL,
+            method         VARCHAR(50)   NOT NULL,
+            bet_amount     DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+            win_amount     DECIMAL(18,2) NOT NULL DEFAULT 0.00,
+            balance_before DECIMAL(18,2) NOT NULL,
+            balance_after  DECIMAL(18,2) NOT NULL,
+            currency       VARCHAR(10)   NOT NULL DEFAULT 'TRY',
+            created_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE KEY uq_transaction (transaction_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     ");
@@ -161,8 +169,7 @@ try {
 }
 
 // =======================================================
-// İDEMPOTENSİ KONTROLÜ
-// Aynı transaction_id daha önce işlendiyse aynı yanıtı dön
+// İDEMPOTENSİ — Aynı transaction tekrar gelirse aynı yanıtı dön
 // =======================================================
 if (!empty($transactionId)) {
     try {
@@ -176,71 +183,67 @@ if (!empty($transactionId)) {
             respond([
                 'balance'       => number_format((float)$existing['balance_after'], 2, '.', ''),
                 'currency_code' => $existing['currency'],
-                'status'        => 'ALREADY_PROCESSED',
             ]);
         }
     } catch (PDOException $e) {
-        error_log('[WalletAPI] İdempotens sorgu hatası: ' . $e->getMessage());
+        error_log('[WalletAPI] İdempotens hatası: ' . $e->getMessage());
     }
 }
 
 // =======================================================
-// BAKİYE GÜNCELLEME — RACE CONDITION KORUMALILR (FOR UPDATE)
+// BAKİYE GÜNCELLEME — KİLİTLİ TRANSACTION
 // =======================================================
 try {
     $pdo->beginTransaction();
 
-    // Satırı kilitle, başka istek aynı anda okuyamasın
     $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id FOR UPDATE");
     $stmt->execute(['id' => $realUserId]);
     $locked = $stmt->fetch();
 
     if (!$locked) {
         $pdo->rollBack();
-        respond(['error' => 'User lock failed', 'balance' => '0.00', 'currency_code' => $currency], 500);
+        respond(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'User lock failed'], 500);
     }
 
     $balanceBefore = (float)$locked['bakiye'];
     $balanceAfter  = $balanceBefore;
     $processed     = false;
 
-    // --- BET ---
+    // BET
     if (in_array($method, ['transaction_bet', 'bet', 'debit']) && $betAmount > 0) {
         if ($balanceBefore < $betAmount) {
             $pdo->rollBack();
             respond([
-                'error'         => 'Insufficient balance',
                 'balance'       => number_format($balanceBefore, 2, '.', ''),
                 'currency_code' => $currency,
-                'status'        => 'INSUFFICIENT_BALANCE',
+                'error'         => 'Insufficient balance',
             ], 402);
         }
         $balanceAfter = $balanceBefore - $betAmount;
         $processed    = true;
     }
 
-    // --- WIN ---
+    // WIN
     elseif (in_array($method, ['transaction_win', 'win', 'credit']) && $winAmount > 0) {
         $balanceAfter = $balanceBefore + $winAmount;
         $processed    = true;
     }
 
-    // --- REFUND / ROLLBACK ---
+    // REFUND / ROLLBACK
     elseif (in_array($method, ['refund', 'rollback', 'cancel']) && $betAmount > 0) {
         $balanceAfter = $balanceBefore + $betAmount;
         $processed    = true;
     }
 
-    // --- BET + WIN aynı istekte (bazı sağlayıcılar) ---
+    // BET + WIN aynı istekte
     elseif (in_array($method, ['transaction', 'round', 'play'])) {
         if ($betAmount > 0) {
             if ($balanceBefore < $betAmount) {
                 $pdo->rollBack();
                 respond([
-                    'error'         => 'Insufficient balance',
                     'balance'       => number_format($balanceBefore, 2, '.', ''),
                     'currency_code' => $currency,
-                    'status'        => 'INSUFFICIENT_BALANCE',
+                    'error'         => 'Insufficient balance',
                 ], 402);
             }
             $balanceAfter -= $betAmount;
@@ -252,11 +255,9 @@ try {
     }
 
     if ($processed) {
-        // Bakiyeyi güncelle
         $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
         $stmt->execute(['balance' => $balanceAfter, 'id' => $realUserId]);
 
-        // Log kaydı
         if (!empty($transactionId)) {
             $stmt = $pdo->prepare("
                 INSERT INTO wallet_transactions
@@ -288,5 +289,5 @@ try {
 } catch (PDOException $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();
     error_log('[WalletAPI] İşlem hatası: ' . $e->getMessage());
-    respond(['error' => 'Transaction failed', 'balance' => '0.00', 'currency_code' => $currency], 500);
+    respond(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'Transaction failed'], 500);
 }
