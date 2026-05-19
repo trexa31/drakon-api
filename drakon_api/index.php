@@ -23,7 +23,6 @@ try {
     exit;
 }
 
-// Gelen veriyi al
 $rawInput = file_get_contents('php://input');
 $input = json_decode($rawInput, true);
 
@@ -39,40 +38,29 @@ $currency = $input['currency_code'] ?? 'TRY';
 $betAmount = $input['bet'] ?? $input['amount'] ?? 0;
 $winAmount = $input['win'] ?? $input['amount'] ?? 0;
 
-// Kullanıcıyı BUL (ID veya kullanıcı adı ile)
+// ÖNCE users tablosunda ara, sonra admin'de
 $balance = 0;
-$realUserId = 0;
+$tableUsed = '';
 
 try {
-    // Önce ID ile ara
-    if ($userId > 0) {
-        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
-        $stmt->execute(['id' => $userId]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($user) {
-            $balance = (float) $user['bakiye'];
-            $realUserId = $user['id'];
-        }
-    }
+    // 1. users tablosunda ara
+    $stmt = $pdo->prepare("SELECT id, bakiye FROM users WHERE id = :id OR username = :username");
+    $stmt->execute(['id' => $userId, 'username' => $username]);
+    $user = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    // ID ile bulunamadıysa kullanıcı adı ile ara
-    if ($realUserId == 0 && !empty($username)) {
-        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE username = :username OR kullanici_adi = :username");
-        $stmt->execute(['username' => $username]);
+    if ($user) {
+        $balance = (float) $user['bakiye'];
+        $tableUsed = 'users';
+        $realUserId = $user['id'];
+    } else {
+        // 2. admin tablosunda ara
+        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id OR username = :username");
+        $stmt->execute(['id' => $userId, 'username' => $username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        
         if ($user) {
             $balance = (float) $user['bakiye'];
-            $realUserId = $user['id'];
-        }
-    }
-    
-    // Hala bulunamadıysa betsapi'yi dene (test için)
-    if ($realUserId == 0) {
-        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE username = 'betsapi'");
-        $stmt->execute();
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($user) {
-            $balance = (float) $user['bakiye'];
+            $tableUsed = 'admin';
             $realUserId = $user['id'];
         }
     }
@@ -80,26 +68,26 @@ try {
     $balance = 0;
 }
 
-// İşlemleri gerçekleştir
 $response = ['balance' => number_format($balance, 2, '.', ''), 'currency_code' => $currency];
 
-if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
-    if ($betAmount <= $balance) {
+// İşlemleri güncelle (hangi tabloda bulunduysa orayı güncelle)
+if ($tableUsed && ($method == 'transaction_bet' || $method == 'transaction_win')) {
+    if ($method == 'transaction_bet' && $betAmount > 0 && $betAmount <= $balance) {
         $newBalance = $balance - $betAmount;
         try {
-            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+            $stmt = $pdo->prepare("UPDATE $tableUsed SET bakiye = :balance WHERE id = :id");
+            $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
+            $response['balance'] = number_format($newBalance, 2, '.', '');
+        } catch (PDOException $e) {}
+    } 
+    elseif ($method == 'transaction_win' && $winAmount > 0) {
+        $newBalance = $balance + $winAmount;
+        try {
+            $stmt = $pdo->prepare("UPDATE $tableUsed SET bakiye = :balance WHERE id = :id");
             $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
             $response['balance'] = number_format($newBalance, 2, '.', '');
         } catch (PDOException $e) {}
     }
-} 
-elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
-    $newBalance = $balance + $winAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
-        $response['balance'] = number_format($newBalance, 2, '.', '');
-    } catch (PDOException $e) {}
 }
 
 echo json_encode($response);
