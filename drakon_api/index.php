@@ -24,9 +24,9 @@ define('DB_PASS',     'fMvWLgjJWSf');
 define('DB_CHARSET',  'utf8mb4');
 
 // Sağlayıcıdan gelen istekleri doğrulamak için shared secret
-// Sağlayıcının kontrol panelinden alınan anahtar buraya yazılır.
-// Kullanmak istemiyorsan SHARED_SECRET'ı boş bırak: define('SHARED_SECRET', '');
-define('Az1SoO4yj23TZISfOa027i6q56qM3Nyg', '');   // örn: 'MySuperSecretKey123'
+if (!defined('SHARED_SECRET')) {
+    define('Az1SoO4yj23TZISfOa027i6q56qM3Nyg', '');  // Sağlayıcı key varsa buraya yaz, yoksa boş bırak
+}
 
 // =======================================================
 // YARDIMCI: JSON çıktısı verip çık
