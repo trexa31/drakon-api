@@ -18,14 +18,22 @@ try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $dbuser, $dbpass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'DB Connection Failed']);
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => $e->getMessage()]);
     exit;
 }
 
 $input = json_decode(file_get_contents('php://input'), true);
 
+// DEBUG: Gelen isteği logla
+$debug_log = [
+    'raw_input' => file_get_contents('php://input'),
+    'parsed_input' => $input,
+    'timestamp' => date('Y-m-d H:i:s')
+];
+file_put_contents('api_debug.log', print_r($debug_log, true) . PHP_EOL, FILE_APPEND);
+
 if (!$input) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'No input data']);
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'debug' => 'No input']);
     exit;
 }
 
@@ -36,120 +44,73 @@ $currency = isset($input['currency_code']) ? $input['currency_code'] : 'TRY';
 $betAmount = isset($input['bet']) ? (float)$input['bet'] : (isset($input['amount']) ? (float)$input['amount'] : 0);
 $winAmount = isset($input['win']) ? (float)$input['win'] : 0;
 
-// ============ ID DÖNÜŞÜM TABLOSU ============
-$idMapping = [
-    1 => 1630,
-    1555 => 1630,
-    1629 => 1629,
-    1628 => 1628,
-];
-
+// ID Mapping
+$idMapping = [1 => 1630, 1555 => 1630, 1629 => 1629, 1628 => 1628];
 if (isset($idMapping[$userId])) {
     $userId = $idMapping[$userId];
 }
-// ===========================================
 
+// Kullanıcı ara
 $balance = 0;
 $realUserId = 0;
-$userInfo = null;
+$found_user = null;
 
 try {
-    // Kullanıcıyı bul (önce ID ile)
+    // Önce ID ile ara
     if ($userId > 0) {
         $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE id = :id");
         $stmt->execute(['id' => $userId]);
-        $userInfo = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($userInfo) {
-            $balance = (float)$userInfo['bakiye'];
-            $realUserId = $userInfo['id'];
-            error_log("User found by ID: {$realUserId}, Balance: {$balance}");
-        }
+        $found_user = $stmt->fetch(PDO::FETCH_ASSOC);
     }
     
-    // ID ile bulunamadıysa username ile ara
-    if ($realUserId == 0 && !empty($username)) {
+    // Username ile ara
+    if (!$found_user && !empty($username)) {
         $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE username = :username");
         $stmt->execute(['username' => $username]);
-        $userInfo = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($userInfo) {
-            $balance = (float)$userInfo['bakiye'];
-            $realUserId = $userInfo['id'];
-            error_log("User found by username: {$realUserId}, Balance: {$balance}");
-        }
+        $found_user = $stmt->fetch(PDO::FETCH_ASSOC);
     }
     
-    // Kullanıcı bulunamadıysa hata döndür
-    if ($realUserId == 0) {
-        error_log("User not found - ID: {$userId}, Username: {$username}");
-        echo json_encode([
-            'balance' => '0.00', 
-            'currency_code' => $currency,
-            'error' => 'User not found'
-        ]);
-        exit;
+    // ID dönüşümü sonrası tekrar dene
+    if (!$found_user && $userId > 0) {
+        $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE id = :id");
+        $stmt->execute(['id' => $userId]);
+        $found_user = $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+    
+    if ($found_user) {
+        $balance = (float)$found_user['bakiye'];
+        $realUserId = $found_user['id'];
+        
+        // DEBUG: Bulunan kullanıcıyı logla
+        file_put_contents('api_debug.log', "FOUND USER: ID={$realUserId}, Balance={$balance}, Username={$found_user['username']}" . PHP_EOL, FILE_APPEND);
+    } else {
+        file_put_contents('api_debug.log', "USER NOT FOUND: user_id={$userId}, username={$username}" . PHP_EOL, FILE_APPEND);
     }
     
 } catch (PDOException $e) {
-    error_log("Database error: " . $e->getMessage());
-    echo json_encode(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'Database error']);
-    exit;
+    file_put_contents('api_debug.log', "DB ERROR: " . $e->getMessage() . PHP_EOL, FILE_APPEND);
 }
 
 $responseBalance = $balance;
 
-// Bahis işlemi (oyundan bahis alındığında)
+// İşlemler
 if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
     if ($betAmount <= $balance) {
         $responseBalance = $balance - $betAmount;
-        try {
-            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-            $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-            error_log("Bet processed - User: {$realUserId}, Old Balance: {$balance}, Bet: {$betAmount}, New Balance: {$responseBalance}");
-        } catch (PDOException $e) {
-            error_log("Bet update failed: " . $e->getMessage());
-            $responseBalance = $balance; // Hata durumunda eski bakiyeyi gönder
-        }
-    } else {
-        error_log("Insufficient balance - User: {$realUserId}, Balance: {$balance}, Bet: {$betAmount}");
-        echo json_encode([
-            'balance' => number_format($balance, 2, '.', ''),
-            'currency_code' => $currency,
-            'error' => 'Insufficient balance'
-        ]);
-        exit;
+        $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id")->execute(['balance' => $responseBalance, 'id' => $realUserId]);
+        file_put_contents('api_debug.log', "BET: Old={$balance}, Bet={$betAmount}, New={$responseBalance}" . PHP_EOL, FILE_APPEND);
     }
-}
-// Kazanç işlemi (oyun kazanç gönderdiğinde)
-elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
+} elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
     $responseBalance = $balance + $winAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-        error_log("Win processed - User: {$realUserId}, Old Balance: {$balance}, Win: {$winAmount}, New Balance: {$responseBalance}");
-    } catch (PDOException $e) {
-        error_log("Win update failed: " . $e->getMessage());
-        $responseBalance = $balance;
-    }
-}
-// İade işlemi
-elseif ($method == 'refund' && $betAmount > 0 && $realUserId > 0) {
+    $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id")->execute(['balance' => $responseBalance, 'id' => $realUserId]);
+    file_put_contents('api_debug.log', "WIN: Old={$balance}, Win={$winAmount}, New={$responseBalance}" . PHP_EOL, FILE_APPEND);
+} elseif ($method == 'refund' && $betAmount > 0 && $realUserId > 0) {
     $responseBalance = $balance + $betAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-        error_log("Refund processed - User: {$realUserId}, Old Balance: {$balance}, Refund: {$betAmount}, New Balance: {$responseBalance}");
-    } catch (PDOException $e) {
-        error_log("Refund update failed: " . $e->getMessage());
-        $responseBalance = $balance;
-    }
+    $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id")->execute(['balance' => $responseBalance, 'id' => $realUserId]);
 }
 
-// Her durumda güncel bakiyeyi gönder
 echo json_encode([
     'balance' => number_format($responseBalance, 2, '.', ''),
-    'currency_code' => $currency,
-    'user_id' => $realUserId // Debug için user_id de gönder
+    'currency_code' => $currency
 ]);
 ?>
