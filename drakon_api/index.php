@@ -12,19 +12,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 $host = 'sql100.infinityfree.com';
 $dbname = 'if0_41958317_c4k';
 $dbuser = 'if0_41958317';
-$dbpass = '3vwx7wgwM7';
+$dbpass = '3vwx7wgwM7'; // UYARI: Bu şifreyi mutlaka değiştir kanka!
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $dbuser, $dbpass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY']);
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'db_connection']);
     exit;
 }
 
 $input = json_decode(file_get_contents('php://input'), true);
 if (!$input) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY']);
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'invalid_input']);
     exit;
 }
 
@@ -36,80 +36,89 @@ $betAmount = isset($input['bet']) ? (float)$input['bet'] : (isset($input['amount
 $winAmount = isset($input['win']) ? (float)$input['win'] : 0;
 
 // ============ ID DÖNÜŞÜM TABLOSU ============
-// Oyun sağlayıcının gönderdiği ID'yi, admin tablosundaki doğru ID'ye çevir
 $idMapping = [
-    1 => 1630,      // Eğer gelen ID 1 ise, Emre Aydemir (ID:1630) olarak işlem yap
-    1555 => 1630,   // Eğer gelen ID 1555 ise, yine Emre'ye çevir
-    1629 => 1629,   // Yiğit can Gündüz
-    1628 => 1628,   // mert aydogan
+    1 => 1630, 
+    1555 => 1630, 
+    1629 => 1629, 
+    1628 => 1628, 
 ];
 
-// ID dönüşümü uygula
 if (isset($idMapping[$userId])) {
     $userId = $idMapping[$userId];
 }
 // ===========================================
 
-// Kullanıcıyı bul (önce ID ile)
-$balance = 0;
+// 1. ADIM: Kullanıcının ID'sini netleştir
 $realUserId = 0;
-
 try {
     if ($userId > 0) {
-        $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE id = :id");
+        $stmt = $pdo->prepare("SELECT id FROM admin WHERE id = :id");
         $stmt->execute(['id' => $userId]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($user) {
-            $balance = (float)$user['bakiye'];
             $realUserId = $user['id'];
         }
     }
     
-    // ID ile bulunamadıysa username ile ara
     if ($realUserId == 0 && !empty($username)) {
-        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE username = :username");
+        $stmt = $pdo->prepare("SELECT id FROM admin WHERE username = :username");
         $stmt->execute(['username' => $username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($user) {
-            $balance = (float)$user['bakiye'];
             $realUserId = $user['id'];
         }
     }
 } catch (PDOException $e) {
-    $balance = 0;
+    $realUserId = 0;
 }
 
-$responseBalance = $balance;
+// Kullanıcı bulunamadıysa direkt 0 bakiye dön
+if ($realUserId == 0) {
+    echo json_encode(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'user_not_found']);
+    exit;
+}
 
-// Bahis işlemi
-if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
-    if ($betAmount <= $balance) {
-        $responseBalance = $balance - $betAmount;
-        try {
-            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-            $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-        } catch (PDOException $e) {}
+// 2. ADIM: Bakiyeyi güncelleme işlemlerini (Matematiksel olarak) yap
+try {
+    // Önce kullanıcının mevcut bakiyesini çekelim (Kontrol için)
+    $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
+    $stmt->execute(['id' => $realUserId]);
+    $currentBalance = (float)$stmt->fetchColumn();
+
+    // Bahis işlemi
+    if ($method == 'transaction_bet' && $betAmount > 0) {
+        if ($currentBalance >= $betAmount) {
+            $stmt = $pdo->prepare("UPDATE admin SET bakiye = bakiye - :bet WHERE id = :id");
+            $stmt->execute(['bet' => $betAmount, 'id' => $realUserId]);
+        }
     }
-} 
-// Kazanç işlemi
-elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
-    $responseBalance = $balance + $winAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-    } catch (PDOException $e) {}
+    // Kazanç işlemi
+    elseif ($method == 'transaction_win' && $winAmount > 0) {
+        $stmt = $pdo->prepare("UPDATE admin SET bakiye = bakiye + :win WHERE id = :id");
+        $stmt->execute(['win' => $winAmount, 'id' => $realUserId]);
+    }
+    // İade işlemi
+    elseif ($method == 'refund' && $betAmount > 0) {
+        $stmt = $pdo->prepare("UPDATE admin SET bakiye = bakiye + :refund WHERE id = :id");
+        $stmt->execute(['refund' => $betAmount, 'id' => $realUserId]);
+    }
+} catch (PDOException $e) {
+    // Güncelleme sırasında hata olursa buraya düşer
 }
-// İade işlemi
-elseif ($method == 'refund' && $betAmount > 0 && $realUserId > 0) {
-    $responseBalance = $balance + $betAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-    } catch (PDOException $e) {}
+
+// 3. ADIM: EN GÜNCEL BAKİYEYİ VERİTABANINDAN ÇEK VE API'YE GÖNDER
+// En kritik yer burası. Yukarıdaki işlemlerden sonra veritabanında bakiye ne olduysa onu okuyoruz.
+$finalBalance = 0.00;
+try {
+    $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
+    $stmt->execute(['id' => $realUserId]);
+    $finalBalance = (float)$stmt->fetchColumn();
+} catch (PDOException $e) {
+    $finalBalance = 0.00;
 }
 
 echo json_encode([
-    'balance' => number_format($responseBalance, 2, '.', ''),
+    'balance' => number_format($finalBalance, 2, '.', ''),
     'currency_code' => $currency
 ]);
 ?>
