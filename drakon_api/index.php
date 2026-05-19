@@ -18,114 +18,229 @@ try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $dbuser, $dbpass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch (PDOException $e) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'db_connection']);
+    echo json_encode(['status' => 0, 'error' => 'DB_CONNECTION_FAILED']);
     exit;
 }
 
 $input = json_decode(file_get_contents('php://input'), true);
 if (!$input) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY']);
+    echo json_encode(['status' => 0, 'error' => 'INVALID_INPUT']);
     exit;
 }
 
-// Gelen veriyi logla
-file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - GELEN: " . json_encode($input) . "\n", FILE_APPEND);
-
+$method = isset($input['method']) ? $input['method'] : '';
 $userId = isset($input['user_id']) ? (int)$input['user_id'] : 0;
 $username = isset($input['username']) ? trim($input['username']) : '';
-$method = isset($input['method']) ? $input['method'] : 'user_balance';
 $currency = isset($input['currency_code']) ? $input['currency_code'] : 'TRY';
+
+// İşlem ID'leri (idempotent kontrolü için)
+$transactionId = isset($input['transaction_id']) ? $input['transaction_id'] : '';
+$sessionId = isset($input['session_id']) ? $input['session_id'] : '';
+$roundId = isset($input['round_id']) ? $input['round_id'] : '';
+$game = isset($input['game']) ? $input['game'] : '';
 $betAmount = isset($input['bet']) ? (float)$input['bet'] : (isset($input['amount']) ? (float)$input['amount'] : 0);
 $winAmount = isset($input['win']) ? (float)$input['win'] : 0;
 
-// ============ KULLANICI BULMA STRATEJİSİ ============
-$balance = 0;
-$realUserId = 0;
+// ============ ID DÖNÜŞÜM TABLOSU (ÇOK ÖNEMLİ!) ============
+// Test ID'lerini gerçek admin ID'lerine çevir
+$idMapping = [
+    1 => 1630,      // Test ID'si 1 -> Emre Aydemir (ID:1630)
+    1555 => 1630,   // Test ID'si 1555 -> Emre Aydemir
+    1629 => 1629,   // Yiğit can Gündüz
+    1628 => 1628,   // mert aydogan
+];
 
+if (isset($idMapping[$userId])) {
+    $userId = $idMapping[$userId];
+}
+
+// ============ İŞLEMLER ============
 try {
-    // 1. Önce gelen ID ile ara (direkt)
-    if ($userId > 0) {
-        $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE id = :id");
-        $stmt->execute(['id' => $userId]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($user) {
-            $balance = (float)$user['bakiye'];
-            $realUserId = $user['id'];
-            file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - ID İLE BULUNDU: ID=$realUserId, Bakiye=$balance\n", FILE_APPEND);
-        }
-    }
-    
-    // 2. ID ile bulunamadıysa username ile ara
-    if ($realUserId == 0 && !empty($username)) {
-        $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE username = :username");
-        $stmt->execute(['username' => $username]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($user) {
-            $balance = (float)$user['bakiye'];
-            $realUserId = $user['id'];
-            file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - USERNAME İLE BULUNDU: ID=$realUserId, Bakiye=$balance\n", FILE_APPEND);
-        }
-    }
-    
-    // 3. Hala bulunamadıysa, admin tablosundaki İLK kullanıcıyı al (TEST AMAÇLI)
-    if ($realUserId == 0) {
-        $stmt = $pdo->query("SELECT id, bakiye, username FROM admin LIMIT 1");
-        $firstUser = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($firstUser) {
-            $balance = (float)$firstUser['bakiye'];
-            $realUserId = $firstUser['id'];
-            file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - İLK KULLANICI ALINDI: ID=$realUserId, Bakiye=$balance\n", FILE_APPEND);
-        }
-    }
-    
-} catch (PDOException $e) {
-    file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - DB HATASI: " . $e->getMessage() . "\n", FILE_APPEND);
-}
-
-// Kullanıcı bulunamadıysa 0 döndürme, test için sabit bakiye döndür
-if ($realUserId == 0) {
-    // TEST MODU: Sabit bakiye döndür (10000 TL)
-    echo json_encode([
-        'balance' => '10000.00',
-        'currency_code' => $currency
-    ]);
-    exit;
-}
-
-$responseBalance = $balance;
-
-// İşlemleri yap
-if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
-    if ($betAmount <= $balance) {
-        $responseBalance = $balance - $betAmount;
-        try {
+    switch ($method) {
+        case 'account_details':
+            // Kullanıcı detaylarını döndür
+            $stmt = $pdo->prepare("SELECT id, username, email FROM admin WHERE id = :id");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($user) {
+                echo json_encode([
+                    'email' => $user['email'],
+                    'name_jogador' => $user['username']
+                ]);
+            } else {
+                echo json_encode(['status' => false, 'error' => 'INVALID_USER']);
+            }
+            break;
+            
+        case 'user_balance':
+            // Kullanıcı bakiyesini döndür (DOKÜMANTA GÖRE: status ve balance)
+            $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($user) {
+                echo json_encode([
+                    'status' => 1,
+                    'balance' => number_format((float)$user['bakiye'], 2, '.', '')
+                ]);
+            } else {
+                echo json_encode(['status' => 0, 'error' => 'INVALID_USER']);
+            }
+            break;
+            
+        case 'transaction_bet':
+            // Bahis işlemi
+            if ($betAmount <= 0) {
+                echo json_encode(['status' => false, 'error' => 'NO_AMOUNT']);
+                break;
+            }
+            
+            // İdempotent kontrol - aynı transaction_id daha önce işlendi mi?
+            $stmt = $pdo->prepare("SELECT id FROM transactions WHERE transaction_id = :tid LIMIT 1");
+            $stmt->execute(['tid' => $transactionId]);
+            if ($stmt->rowCount() > 0) {
+                // Daha önce işlenmiş, sadece bakiyeyi döndür
+                $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
+                $stmt->execute(['id' => $userId]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                echo json_encode(['status' => true, 'balance' => number_format((float)$user['bakiye'], 2, '.', '')]);
+                break;
+            }
+            
+            // Bakiyeyi kontrol et
+            $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$user) {
+                echo json_encode(['status' => false, 'error' => 'INVALID_USER']);
+                break;
+            }
+            
+            if ((float)$user['bakiye'] < $betAmount) {
+                echo json_encode(['status' => false, 'error' => 'NO_BALANCE']);
+                break;
+            }
+            
+            // Bakiyeyi düş
+            $newBalance = (float)$user['bakiye'] - $betAmount;
             $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-            $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-            file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - BAHIS: ID=$realUserId, Miktar=$betAmount, YeniBakiye=$responseBalance\n", FILE_APPEND);
-        } catch (PDOException $e) {}
+            $stmt->execute(['balance' => $newBalance, 'id' => $userId]);
+            
+            // İşlemi logla (idempotent için)
+            $stmt = $pdo->prepare("INSERT INTO transactions (user_id, transaction_id, session_id, round_id, game, type, amount, balance_after, created_at) VALUES (:uid, :tid, :sid, :rid, :game, 'bet', :amount, :balance, NOW())");
+            $stmt->execute([
+                'uid' => $userId,
+                'tid' => $transactionId,
+                'sid' => $sessionId,
+                'rid' => $roundId,
+                'game' => $game,
+                'amount' => $betAmount,
+                'balance' => $newBalance
+            ]);
+            
+            echo json_encode([
+                'status' => true,
+                'balance' => number_format($newBalance, 2, '.', '')
+            ]);
+            break;
+            
+        case 'transaction_win':
+            // Kazanç işlemi
+            if ($winAmount <= 0) {
+                echo json_encode(['status' => false, 'error' => 'NO_AMOUNT']);
+                break;
+            }
+            
+            // İdempotent kontrol
+            $stmt = $pdo->prepare("SELECT id FROM transactions WHERE transaction_id = :tid LIMIT 1");
+            $stmt->execute(['tid' => $transactionId]);
+            if ($stmt->rowCount() > 0) {
+                $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
+                $stmt->execute(['id' => $userId]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                echo json_encode(['status' => true, 'balance' => number_format((float)$user['bakiye'], 2, '.', '')]);
+                break;
+            }
+            
+            // Bakiyeyi bul
+            $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$user) {
+                echo json_encode(['status' => false, 'error' => 'INVALID_USER']);
+                break;
+            }
+            
+            // Bakiyeyi artır
+            $newBalance = (float)$user['bakiye'] + $winAmount;
+            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+            $stmt->execute(['balance' => $newBalance, 'id' => $userId]);
+            
+            // İşlemi logla
+            $stmt = $pdo->prepare("INSERT INTO transactions (user_id, transaction_id, session_id, round_id, game, type, amount, balance_after, created_at) VALUES (:uid, :tid, :sid, :rid, :game, 'win', :amount, :balance, NOW())");
+            $stmt->execute([
+                'uid' => $userId,
+                'tid' => $transactionId,
+                'sid' => $sessionId,
+                'rid' => $roundId,
+                'game' => $game,
+                'amount' => $winAmount,
+                'balance' => $newBalance
+            ]);
+            
+            echo json_encode([
+                'status' => true,
+                'balance' => number_format($newBalance, 2, '.', '')
+            ]);
+            break;
+            
+        case 'refund':
+            // İade işlemi
+            if ($betAmount <= 0) {
+                echo json_encode(['status' => false, 'error' => 'NO_AMOUNT']);
+                break;
+            }
+            
+            // İdempotent kontrol
+            $stmt = $pdo->prepare("SELECT id FROM transactions WHERE transaction_id = :tid LIMIT 1");
+            $stmt->execute(['tid' => $transactionId]);
+            if ($stmt->rowCount() > 0) {
+                $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
+                $stmt->execute(['id' => $userId]);
+                $user = $stmt->fetch(PDO::FETCH_ASSOC);
+                echo json_encode(['status' => true, 'balance' => number_format((float)$user['bakiye'], 2, '.', '')]);
+                break;
+            }
+            
+            // Bakiyeyi bul
+            $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
+            $stmt->execute(['id' => $userId]);
+            $user = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$user) {
+                echo json_encode(['status' => false, 'error' => 'INVALID_USER']);
+                break;
+            }
+            
+            // Bakiyeyi geri ekle
+            $newBalance = (float)$user['bakiye'] + $betAmount;
+            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+            $stmt->execute(['balance' => $newBalance, 'id' => $userId]);
+            
+            echo json_encode([
+                'status' => true,
+                'balance' => number_format($newBalance, 2, '.', '')
+            ]);
+            break;
+            
+        default:
+            echo json_encode(['status' => false, 'error' => 'INVALID_METHOD']);
+            break;
     }
+} catch (PDOException $e) {
+    echo json_encode(['status' => false, 'error' => 'DATABASE_ERROR']);
 }
-elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
-    $responseBalance = $balance + $winAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-        file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - KAZANC: ID=$realUserId, Miktar=$winAmount, YeniBakiye=$responseBalance\n", FILE_APPEND);
-    } catch (PDOException $e) {}
-}
-elseif ($method == 'refund' && $betAmount > 0 && $realUserId > 0) {
-    $responseBalance = $balance + $betAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-    } catch (PDOException $e) {}
-}
-
-// Logla
-file_put_contents('oyun_log.txt', date('Y-m-d H:i:s') . " - RESPONSE: balance=$responseBalance, method=$method\n", FILE_APPEND);
-
-echo json_encode([
-    'balance' => number_format($responseBalance, 2, '.', ''),
-    'currency_code' => $currency
-]);
 ?>
