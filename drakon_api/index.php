@@ -8,27 +8,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-$host = 'sql206.infinityfree.com';
-$port = 3306;
-$dbname = 'if0_41958317';
-$dbuser = 'if0_41958317_c4k';
-$dbpass = 'fMvWLgjJWSf'; // phpMyAdmin'den direkt kopyala
+$dbname = 'if0_41958317_c4k';
+$dbuser = 'if0_41958317';
+$dbpass = 'fMvWLgjJWSf';
 
-try {
-    // Port ile bağlanmayı dene
-    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
-    // Hata detayını döndür (debug için)
+// Otomatik host bulma - sırayla dene
+$hosts = ['localhost', '127.0.0.1', 'sql206.infinityfree.com'];
+$pdo = null;
+$lastError = '';
+$workingHost = '';
+
+foreach ($hosts as $host) {
+    try {
+        $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $workingHost = $host;
+        break; // Bağlantı başarılı!
+    } catch (PDOException $e) {
+        $lastError = $e->getMessage();
+        continue; // Sonraki hostu dene
+    }
+}
+
+// Hiçbiri çalışmadıysa
+if (!$pdo) {
     echo json_encode([
         'balance' => '0.00', 
         'currency_code' => 'TRY', 
         'error' => 'DB connection failed',
-        'error_detail' => $e->getMessage(),
-        'host' => $host,
-        'dbname' => $dbname,
-        'user' => $dbuser
+        'error_detail' => $lastError,
+        'tried_hosts' => $hosts
     ]);
     exit;
 }
@@ -101,7 +111,8 @@ if ($realUserId === 0) {
         'debug' => [
             'status' => 'USER_NOT_FOUND',
             'searched_user_id' => $userId,
-            'searched_username' => $username
+            'searched_username' => $username,
+            'working_host' => $workingHost
         ]
     ]);
     exit;
@@ -151,7 +162,8 @@ echo json_encode([
         'username' => $foundUser['username'] ?? null,
         'db_bakiye_raw' => $foundUser['bakiye'] ?? null,
         'parsed_balance' => $balance,
-        'method' => $method
+        'method' => $method,
+        'working_host' => $workingHost
     ]
 ]);
 ?>
