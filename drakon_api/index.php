@@ -3,123 +3,180 @@ header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-$host = 'sql206.infinityfree.com';
+// ==================== VERITABANI BAGLANTISI ====================
+// NOT: InfinityFree'de localhost veya 127.0.0.1 kullan!
+// sql206.infinityfree.com sadece phpMyAdmin icin, PHP'den erisilemez!
+
+$host = 'localhost';        // DENE: localhost, 127.0.0.1, veya sql206.infinityfree.com
 $dbname = 'if0_41958317_c4k';
 $dbuser = 'if0_41958317';
 $dbpass = 'fMvWLgjJWSf';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $dbuser, $dbpass);
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'Db Connection Failed']);
-    exit;
+    // Eger localhost olmazsa 127.0.0.1 dene
+    try {
+        $host = '127.0.0.1';
+        $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    } catch (PDOException $e2) {
+        echo json_encode([
+            'balance' => '0.00', 
+            'currency_code' => 'TRY',
+            'error' => 'DB connection failed: ' . $e->getMessage()
+        ]);
+        exit;
+    }
 }
 
+// ==================== INPUT AL ====================
 $input = json_decode(file_get_contents('php://input'), true);
-if (!$input) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'Invalid Input']);
+if (!$input || !is_array($input)) {
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'Invalid JSON']);
     exit;
 }
 
-// Sağlayıcıdan gelen ham ID string veya int olabilir, o yüzden cast etmeden alıyoruz
-$rawUserId = isset($input['user_id']) ? trim($input['user_id']) : '';
+$userId = isset($input['user_id']) ? (int)$input['user_id'] : 0;
 $username = isset($input['username']) ? trim($input['username']) : '';
 $method = isset($input['method']) ? $input['method'] : 'user_balance';
 $currency = isset($input['currency_code']) ? $input['currency_code'] : 'TRY';
-
 $betAmount = isset($input['bet']) ? (float)$input['bet'] : (isset($input['amount']) ? (float)$input['amount'] : 0);
 $winAmount = isset($input['win']) ? (float)$input['win'] : 0;
 
-$balance = 0;
-$realUserId = 0;
+// ==================== KULLANICI BUL (DINAMIK - HERKES ICIN) ====================
+// ARTik SABIT ID MAPPING YOK! Gelen ID neyse o aranir!
 
-// =======================================================
-// DİNAMİK KULLANICI BULMA (ESKİ VE YENİ TÜM ÜYELER İÇİN)
-// =======================================================
+$balance = 0.00;
+$realUserId = 0;
+$foundUser = null;
+
 try {
-    // 1. Adım: Gelen veri sayısal ise önce ID olarak ara
-    if (is_numeric($rawUserId) && (int)$rawUserId > 0) {
-        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
-        $stmt->execute(['id' => (int)$rawUserId]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+    // 1. ONCE ID ILE ARA - Direkt gelen ID'yi veritabaninda ara
+    if ($userId > 0) {
+        $stmt = $pdo->prepare("SELECT id, bakiye, username, parabirimi FROM admin WHERE id = :id LIMIT 1");
+        $stmt->execute(['id' => $userId]);
+        $user = $stmt->fetch();
         if ($user) {
-            $balance = (float)$user['bakiye'];
-            $realUserId = $user['id'];
+            $foundUser = $user;
+            $realUserId = (int)$user['id'];
+            // Bakiye degerini guvenli sekilde al
+            $bakiyeRaw = $user['bakiye'];
+            if ($bakiyeRaw !== null && $bakiyeRaw !== '') {
+                $balance = (float) str_replace(',', '.', (string)$bakiyeRaw);
+            }
+            // Para birimini DB'den al
+            if (!empty($user['parabirimi'])) {
+                $currency = strtoupper(str_replace(['₺', '€', '$'], ['TRY', 'EUR', 'USD'], $user['parabirimi']));
+            }
         }
     }
-   
-    // 2. Adım: ID ile bulunamadıysa veya gelen veri string ise username olarak ara
-    if ($realUserId == 0) {
-        $searchName = !empty($username) ? $username : $rawUserId;
-        if (!empty($searchName)) {
-            $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE username = :username");
-            $stmt->execute(['username' => $searchName]);
-            $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($user) {
-                $balance = (float)$user['bakiye'];
-                $realUserId = $user['id'];
+    
+    // 2. ID bulunamadiysa USERNAME ile ara
+    if ($realUserId === 0 && !empty($username)) {
+        $stmt = $pdo->prepare("SELECT id, bakiye, parabirimi FROM admin WHERE username = :username LIMIT 1");
+        $stmt->execute(['username' => $username]);
+        $user = $stmt->fetch();
+        if ($user) {
+            $foundUser = $user;
+            $realUserId = (int)$user['id'];
+            $bakiyeRaw = $user['bakiye'];
+            if ($bakiyeRaw !== null && $bakiyeRaw !== '') {
+                $balance = (float) str_replace(',', '.', (string)$bakiyeRaw);
+            }
+            if (!empty($user['parabirimi'])) {
+                $currency = strtoupper(str_replace(['₺', '€', '$'], ['TRY', 'EUR', 'USD'], $user['parabirimi']));
             }
         }
     }
 } catch (PDOException $e) {
-    // Hata durumunda loglanabilir, şimdilik sıfırlıyoruz
-    $realUserId = 0;
-}
-
-// Kullanıcı hiçbir şekilde bulunamadıysa sıfır bakiye dön ve çık
-if ($realUserId == 0) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => $currency, 'status' => 'User Not Found']);
+    echo json_encode(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'Query: ' . $e->getMessage()]);
     exit;
 }
 
+// Kullanici bulunamadiysa
+if ($realUserId === 0) {
+    echo json_encode([
+        'balance' => '0.00',
+        'currency_code' => $currency,
+        'debug' => [
+            'status' => 'USER_NOT_FOUND',
+            'searched_user_id' => $userId,
+            'searched_username' => $username
+        ]
+    ]);
+    exit;
+}
+
+// ==================== ISLEM YAP ====================
 $responseBalance = $balance;
 
-// =======================================================
-// BAKİYE GÜNCELLEME İŞLEMLERİ (ANA BAKİYEYE YANSIMA)
-// =======================================================
-
-// 1. Bahis Düştü (Bet / Debit)
-if (($method == 'transaction_bet' || $method == 'bet') && $betAmount > 0) {
-    // Kullanıcının bakiyesi yetiyorsa düşüyoruz (Eksiye düşmeyi engellemek için)
-    if ($balance >= $betAmount) {
+// ----- BAHIS ISLEMI (Para dusur) -----
+if ($method === 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
+    if ($betAmount <= $balance) {
         $responseBalance = $balance - $betAmount;
-    } else {
-        // Bakiye yetersizse mevcut bakiyeyi koru veya sağlayıcıya göre hata kodu dön (Genelde bakiye yetersiz olsa da mevcut bakiye dönülür)
+        try {
+            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+            $stmt->execute([
+                'balance' => number_format($responseBalance, 2, '.', ''), 
+                'id' => $realUserId
+            ]);
+        } catch (PDOException $e) {
+            $responseBalance = $balance; // Hata olursa eski bakiyeyi koru
+        }
+    }
+}
+
+// ----- KAZANC ISLEMI (Para ekle) -----
+elseif ($method === 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
+    $responseBalance = $balance + $winAmount;
+    try {
+        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+        $stmt->execute([
+            'balance' => number_format($responseBalance, 2, '.', ''), 
+            'id' => $realUserId
+        ]);
+    } catch (PDOException $e) {
         $responseBalance = $balance;
     }
-    
-    $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-    $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
 }
 
-// 2. Kazanç Eklendi (Win / Credit)
-// NOT: Sağlayıcı bazen bet ve win'i aynı istekte (metot) gönderebilir. 
-// Eğer metot sadece 'win' ise veya ortak bir transaction metoduysa hem bet düşüp hem win ekliyoruz.
-elseif (($method == 'transaction_win' || $method == 'win') && $winAmount > 0) {
-    $responseBalance = $balance + $winAmount;
-    
-    $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-    $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
-}
-
-// 3. İade / İptal (Refund / Rollback)
-elseif (($method == 'refund' || $method == 'rollback') && $betAmount > 0) {
+// ----- IADE ISLEMI (Bahis iadesi) -----
+elseif ($method === 'refund' && $betAmount > 0 && $realUserId > 0) {
     $responseBalance = $balance + $betAmount;
-    
-    $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-    $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
+    try {
+        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+        $stmt->execute([
+            'balance' => number_format($responseBalance, 2, '.', ''), 
+            'id' => $realUserId
+        ]);
+    } catch (PDOException $e) {
+        $responseBalance = $balance;
+    }
 }
 
-// Çıktıyı tam olarak API'nin istediği formatta (float string - 2 basamaklı) gönderiyoruz
+// ==================== SONUC DON ====================
 echo json_encode([
     'balance' => number_format($responseBalance, 2, '.', ''),
-    'currency_code' => $currency
+    'currency_code' => $currency,
+    'debug' => [
+        'user_id' => $userId,
+        'real_user_id' => $realUserId,
+        'username' => $foundUser['username'] ?? null,
+        'db_bakiye_raw' => $foundUser['bakiye'] ?? null,
+        'parsed_balance' => $balance,
+        'response_balance' => $responseBalance,
+        'method' => $method,
+        'bet_amount' => $betAmount,
+        'win_amount' => $winAmount
+    ]
 ]);
 ?>
