@@ -9,16 +9,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// ============ LOG TUTMA (Sorun çözülene kadar kalabilir) ============
-$logData = [
-    'time' => date('Y-m-d H:i:s'),
-    'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-    'method' => $_SERVER['REQUEST_METHOD'],
-    'raw_input' => file_get_contents('php://input')
-];
-file_put_contents(__DIR__ . '/api_log.txt', json_encode($logData) . "\n", FILE_APPEND);
-// ===================================================================
-
 // Veritabanı bağlantısı
 $host = 'sql100.infinityfree.com';
 $dbname = 'if0_41958317_c4k';
@@ -98,9 +88,6 @@ if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
             $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
             $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
         } catch (PDOException $e) {}
-    } else {
-        // Bakiye yetersiz
-        $responseBalance = $balance;
     }
 } 
 elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
