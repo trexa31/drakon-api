@@ -35,6 +35,7 @@ if ($userId > 0) {
     } catch (Exception $e) {}
 }
 
+// SAĞLAYICININ BEKLEDİĞİ FORMAT (İngilizce)
 switch ($method) {
     case 'transaction_bet':
         $betAmount = $data['bet'] ?? $data['amount'] ?? 0;
@@ -52,6 +53,7 @@ switch ($method) {
         echo json_encode(['balance' => number_format($balance, 2, '.', '')]);
         break;
     default:
+        // user_balance için beklenen format
         echo json_encode([
             'balance' => number_format($balance, 2, '.', ''),
             'currency_code' => $currency
