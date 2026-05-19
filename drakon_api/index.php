@@ -38,31 +38,18 @@ $currency = $input['currency_code'] ?? 'TRY';
 $betAmount = $input['bet'] ?? $input['amount'] ?? 0;
 $winAmount = $input['win'] ?? $input['amount'] ?? 0;
 
-// ÖNCE users tablosunda ara, sonra admin'de
+// SADECE admin tablosuna bak
 $balance = 0;
-$tableUsed = '';
+$realUserId = 0;
 
 try {
-    // 1. users tablosunda ara
-    $stmt = $pdo->prepare("SELECT id, bakiye FROM users WHERE id = :id OR username = :username");
-    $stmt->execute(['id' => $userId, 'username' => $username]);
+    $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id OR username = :username OR kullanici_adi = :username2");
+    $stmt->execute(['id' => $userId, 'username' => $username, 'username2' => $username]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
     
     if ($user) {
         $balance = (float) $user['bakiye'];
-        $tableUsed = 'users';
         $realUserId = $user['id'];
-    } else {
-        // 2. admin tablosunda ara
-        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id OR username = :username");
-        $stmt->execute(['id' => $userId, 'username' => $username]);
-        $user = $stmt->fetch(PDO::FETCH_ASSOC);
-        
-        if ($user) {
-            $balance = (float) $user['bakiye'];
-            $tableUsed = 'admin';
-            $realUserId = $user['id'];
-        }
     }
 } catch (PDOException $e) {
     $balance = 0;
@@ -70,24 +57,23 @@ try {
 
 $response = ['balance' => number_format($balance, 2, '.', ''), 'currency_code' => $currency];
 
-// İşlemleri güncelle (hangi tabloda bulunduysa orayı güncelle)
-if ($tableUsed && ($method == 'transaction_bet' || $method == 'transaction_win')) {
-    if ($method == 'transaction_bet' && $betAmount > 0 && $betAmount <= $balance) {
+if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
+    if ($betAmount <= $balance) {
         $newBalance = $balance - $betAmount;
         try {
-            $stmt = $pdo->prepare("UPDATE $tableUsed SET bakiye = :balance WHERE id = :id");
-            $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
-            $response['balance'] = number_format($newBalance, 2, '.', '');
-        } catch (PDOException $e) {}
-    } 
-    elseif ($method == 'transaction_win' && $winAmount > 0) {
-        $newBalance = $balance + $winAmount;
-        try {
-            $stmt = $pdo->prepare("UPDATE $tableUsed SET bakiye = :balance WHERE id = :id");
+            $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
             $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
             $response['balance'] = number_format($newBalance, 2, '.', '');
         } catch (PDOException $e) {}
     }
+} 
+elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
+    $newBalance = $balance + $winAmount;
+    try {
+        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
+        $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
+        $response['balance'] = number_format($newBalance, 2, '.', '');
+    } catch (PDOException $e) {}
 }
 
 echo json_encode($response);
