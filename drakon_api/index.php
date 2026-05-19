@@ -12,86 +12,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 $rawData = file_get_contents('php://input');
 $data = json_decode($rawData, true);
 
-$userId = $data['user_id'] ?? 0;
-$currency = $data['currency_code'] ?? 'TRY';
+$userId = $data['user_id'] ?? $data['id'] ?? 0;
 $method = $data['method'] ?? '';
-$balance = 100.00;
+$currency = $data['currency_code'] ?? 'TRY';
 
-// ============ VERİTABANI BAĞLANTISI ============
+// Veritabanı bağlantısı - C4KBET veritabanı
 $host = 'sql100.infinityfree.com';
-$dbname = 'if0_41734721_trexa';
-$user = 'if0_41734721';
+$dbname = 'if0_41958317_c4k';
+$user = 'if0_41958317';
 $pass = '3vwx7wgwM7';
+
+$balance = 0;
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $user, $pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     
     if ($userId > 0) {
+        // admin tablosunda ara (tüm kullanıcılar burada)
         $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
         $stmt->execute(['id' => $userId]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($result && isset($result['bakiye'])) {
+        
+        if ($result) {
             $balance = (float)$result['bakiye'];
         }
     }
 } catch (PDOException $e) {
-    // Hata olursa log tut ama çalışmaya devam et
-    error_log("DB Error: " . $e->getMessage());
+    // Hata olursa bakiye 0 döndür
+    $balance = 0;
 }
-// ============================================
 
-// METHOD BAZLI İŞLEMLER
-switch ($method) {
-    case 'transaction_bet':
+// İşlem varsa güncelle
+if ($userId > 0 && ($method == 'transaction_bet' || $method == 'transaction_win' || $method == 'refund')) {
+    
+    if ($method == 'transaction_bet') {
         $betAmount = $data['bet'] ?? $data['amount'] ?? 0;
-        $newBalance = $balance - $betAmount;
-        if ($newBalance < 0) $newBalance = 0;
-        
-        // Veritabanını güncelle
-        if ($userId > 0) {
-            try {
-                $updateStmt = $pdo->prepare("UPDATE admin SET bakiye = ? WHERE id = ?");
-                $updateStmt->execute([$newBalance, $userId]);
-            } catch (PDOException $e) {}
-        }
-        echo json_encode(['balance' => number_format($newBalance, 2, '.', '')]);
-        break;
-        
-    case 'transaction_win':
+        $balance = max(0, $balance - $betAmount);
+    } elseif ($method == 'transaction_win') {
         $winAmount = $data['win'] ?? $data['amount'] ?? 0;
-        $newBalance = $balance + $winAmount;
-        
-        // Veritabanını güncelle
-        if ($userId > 0) {
-            try {
-                $updateStmt = $pdo->prepare("UPDATE admin SET bakiye = ? WHERE id = ?");
-                $updateStmt->execute([$newBalance, $userId]);
-            } catch (PDOException $e) {}
-        }
-        echo json_encode(['balance' => number_format($newBalance, 2, '.', '')]);
-        break;
-        
-    case 'refund':
+        $balance = $balance + $winAmount;
+    } elseif ($method == 'refund') {
         $refundAmount = $data['amount'] ?? 0;
-        $newBalance = $balance + $refundAmount;
-        
-        // Veritabanını güncelle
-        if ($userId > 0) {
-            try {
-                $updateStmt = $pdo->prepare("UPDATE admin SET bakiye = ? WHERE id = ?");
-                $updateStmt->execute([$newBalance, $userId]);
-            } catch (PDOException $e) {}
-        }
-        echo json_encode(['balance' => number_format($newBalance, 2, '.', '')]);
-        break;
-        
-    default:
-        // user_balance - sadece bakiye sorgula
-        echo json_encode([
-            'balance' => number_format($balance, 2, '.', ''),
-            'currency_code' => $currency
-        ]);
-        break;
+        $balance = $balance + $refundAmount;
+    }
+    
+    try {
+        $updateStmt = $pdo->prepare("UPDATE admin SET bakiye = ? WHERE id = ?");
+        $updateStmt->execute([$balance, $userId]);
+    } catch (PDOException $e) {
+        // Güncelleme hatası olursa sessiz geç
+    }
 }
+
+echo json_encode([
+    'balance' => number_format($balance, 2, '.', ''),
+    'currency_code' => $currency
+]);
 ?>
