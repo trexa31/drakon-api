@@ -10,8 +10,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 $host = 'sql206.infinityfree.com';
 $port = 3306;
-$dbname = 'if0_41958317_c4k';
-$dbuser = 'if0_41958317';
+$dbname = 'if0_41958317';
+$dbuser = 'if0_41958317_c4k';
 $dbpass = 'fMvWLgjJWSf'; // phpMyAdmin'den direkt kopyala
 
 try {
