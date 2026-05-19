@@ -23,68 +23,81 @@ try {
     exit;
 }
 
-// Gelen veriyi al (her durumda çalışsın)
+// Gelen veriyi al
 $rawInput = file_get_contents('php://input');
 $input = json_decode($rawInput, true);
 
-// Eğer JSON geçersizse veya boşsa, sadece bakiye sorgula
-if (!$input || !isset($input['user_id'])) {
-    // Test amaçlı varsayılan kullanıcı
-    $userId = 1555;
-    $method = 'user_balance';
-    $currency = 'TRY';
-    $betAmount = 0;
-    $winAmount = 0;
-    $refundAmount = 0;
-} else {
-    $userId = $input['user_id'] ?? 1555;
-    $method = $input['method'] ?? 'user_balance';
-    $currency = $input['currency_code'] ?? 'TRY';
-    $betAmount = $input['bet'] ?? $input['amount'] ?? 0;
-    $winAmount = $input['win'] ?? $input['amount'] ?? 0;
-    $refundAmount = $input['amount'] ?? 0;
+if (!$input) {
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY']);
+    exit;
 }
 
-// Kullanıcı bakiyesini al
+$userId = $input['user_id'] ?? 0;
+$username = $input['username'] ?? '';
+$method = $input['method'] ?? 'user_balance';
+$currency = $input['currency_code'] ?? 'TRY';
+$betAmount = $input['bet'] ?? $input['amount'] ?? 0;
+$winAmount = $input['win'] ?? $input['amount'] ?? 0;
+
+// Kullanıcıyı BUL (ID veya kullanıcı adı ile)
 $balance = 0;
+$realUserId = 0;
+
 try {
-    $stmt = $pdo->prepare("SELECT bakiye FROM admin WHERE id = :id");
-    $stmt->execute(['id' => $userId]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    if ($user) {
-        $balance = (float) $user['bakiye'];
+    // Önce ID ile ara
+    if ($userId > 0) {
+        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE id = :id");
+        $stmt->execute(['id' => $userId]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user) {
+            $balance = (float) $user['bakiye'];
+            $realUserId = $user['id'];
+        }
+    }
+    
+    // ID ile bulunamadıysa kullanıcı adı ile ara
+    if ($realUserId == 0 && !empty($username)) {
+        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE username = :username OR kullanici_adi = :username");
+        $stmt->execute(['username' => $username]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user) {
+            $balance = (float) $user['bakiye'];
+            $realUserId = $user['id'];
+        }
+    }
+    
+    // Hala bulunamadıysa betsapi'yi dene (test için)
+    if ($realUserId == 0) {
+        $stmt = $pdo->prepare("SELECT id, bakiye FROM admin WHERE username = 'betsapi'");
+        $stmt->execute();
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($user) {
+            $balance = (float) $user['bakiye'];
+            $realUserId = $user['id'];
+        }
     }
 } catch (PDOException $e) {
     $balance = 0;
 }
 
 // İşlemleri gerçekleştir
-$newBalance = $balance;
 $response = ['balance' => number_format($balance, 2, '.', ''), 'currency_code' => $currency];
 
-if ($method == 'transaction_bet' && $betAmount > 0) {
+if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
     if ($betAmount <= $balance) {
         $newBalance = $balance - $betAmount;
         try {
             $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-            $stmt->execute(['balance' => $newBalance, 'id' => $userId]);
+            $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
             $response['balance'] = number_format($newBalance, 2, '.', '');
         } catch (PDOException $e) {}
     }
 } 
-elseif ($method == 'transaction_win' && $winAmount > 0) {
+elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
     $newBalance = $balance + $winAmount;
     try {
         $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $newBalance, 'id' => $userId]);
-        $response['balance'] = number_format($newBalance, 2, '.', '');
-    } catch (PDOException $e) {}
-}
-elseif ($method == 'refund' && $refundAmount > 0) {
-    $newBalance = $balance + $refundAmount;
-    try {
-        $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $newBalance, 'id' => $userId]);
+        $stmt->execute(['balance' => $newBalance, 'id' => $realUserId]);
         $response['balance'] = number_format($newBalance, 2, '.', '');
     } catch (PDOException $e) {}
 }
