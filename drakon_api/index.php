@@ -3,40 +3,33 @@ header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
-
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// ============ YENİ VE DOĞRU VERİTABANI AYARLARI ============
-$host = 'sql206.infinityfree.com';      // Yeni host
-$dbname = 'if0_41958317_c4k';           // Database adı
-$dbuser = 'if0_41958317';               // Kullanıcı adı
-$dbpass = 'fMvWLgjJWSf';                // Yeni şifre
-// ===========================================================
+$host = 'sql206.infinityfree.com';
+$dbname = 'if0_41958317_c4k';
+$dbuser = 'if0_41958317';
+$dbpass = 'fMvWLgjJWSf';
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $dbuser, $dbpass);
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    error_log("DB Connection Error: " . $e->getMessage());
-    echo json_encode([
-        'balance' => '0.00', 
-        'currency_code' => 'TRY',
-        'error' => 'Database connection failed'
-    ]);
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'DB connection failed']);
     exit;
 }
 
+// JSON input al
 $input = json_decode(file_get_contents('php://input'), true);
-
-if (!$input) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY']);
+if (!$input || !is_array($input)) {
+    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'Invalid JSON input']);
     exit;
 }
 
+// Input değerlerini al
 $userId = isset($input['user_id']) ? (int)$input['user_id'] : 0;
 $username = isset($input['username']) ? trim($input['username']) : '';
 $method = isset($input['method']) ? $input['method'] : 'user_balance';
@@ -44,98 +37,110 @@ $currency = isset($input['currency_code']) ? $input['currency_code'] : 'TRY';
 $betAmount = isset($input['bet']) ? (float)$input['bet'] : (isset($input['amount']) ? (float)$input['amount'] : 0);
 $winAmount = isset($input['win']) ? (float)$input['win'] : 0;
 
-// ============ ID DÖNÜŞÜM TABLOSU ============
-$idMapping = [
-    1 => 1630,
-    1555 => 1630,
-    1629 => 1629,
-    1628 => 1628,
-];
-
-if (isset($idMapping[$userId])) {
-    $userId = $idMapping[$userId];
-}
-// ===========================================
-
-// Kullanıcıyı bul
-$balance = 0;
+$balance = 0.00;
 $realUserId = 0;
+$foundUser = null;
 
 try {
-    // Önce ID ile ara
+    // 1. Önce ID ile admin tablosunda ara (DİREKT ID, mapping yok!)
     if ($userId > 0) {
-        $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE id = :id");
+        $stmt = $pdo->prepare("SELECT id, bakiye, username, parabirimi FROM admin WHERE id = :id LIMIT 1");
         $stmt->execute(['id' => $userId]);
         $user = $stmt->fetch();
-        
         if ($user) {
-            $balance = (float)$user['bakiye'];
-            $realUserId = $user['id'];
+            $foundUser = $user;
+            $realUserId = (int)$user['id'];
+            $bakiyeRaw = $user['bakiye'];
+            if ($bakiyeRaw !== null && $bakiyeRaw !== '') {
+                $balance = (float) str_replace(',', '.', (string)$bakiyeRaw);
+            }
+            if (!empty($user['parabirimi'])) {
+                $currency = strtoupper(str_replace(['₺', '€', '$'], ['TRY', 'EUR', 'USD'], $user['parabirimi']));
+            }
         }
     }
     
-    // ID ile bulunamadıysa username ile ara
-    if ($realUserId == 0 && !empty($username)) {
-        $stmt = $pdo->prepare("SELECT id, bakiye, username FROM admin WHERE username = :username");
+    // 2. ID bulunamadıysa username ile ara
+    if ($realUserId === 0 && !empty($username)) {
+        $stmt = $pdo->prepare("SELECT id, bakiye, parabirimi FROM admin WHERE username = :username LIMIT 1");
         $stmt->execute(['username' => $username]);
         $user = $stmt->fetch();
-        
         if ($user) {
-            $balance = (float)$user['bakiye'];
-            $realUserId = $user['id'];
+            $foundUser = $user;
+            $realUserId = (int)$user['id'];
+            $bakiyeRaw = $user['bakiye'];
+            if ($bakiyeRaw !== null && $bakiyeRaw !== '') {
+                $balance = (float) str_replace(',', '.', (string)$bakiyeRaw);
+            }
+            if (!empty($user['parabirimi'])) {
+                $currency = strtoupper(str_replace(['₺', '€', '$'], ['TRY', 'EUR', 'USD'], $user['parabirimi']));
+            }
         }
     }
-    
-    // Kullanıcı hala bulunamadıysa demo kullanıcı oluştur (test için)
-    if ($realUserId == 0) {
-        // Test amaçlı geçici kullanıcı - silinebilir
-        $balance = 1000.00;
-        $realUserId = 999;
-    }
-    
 } catch (PDOException $e) {
-    error_log("Query Error: " . $e->getMessage());
-    $balance = 0;
+    echo json_encode(['balance' => '0.00', 'currency_code' => $currency, 'error' => 'Query error: ' . $e->getMessage()]);
+    exit;
+}
+
+// Kullanıcı bulunamadıysa
+if ($realUserId === 0) {
+    echo json_encode([
+        'balance' => '0.00',
+        'currency_code' => $currency,
+        'debug' => [
+            'status' => 'USER_NOT_FOUND',
+            'searched_user_id' => $userId,
+            'searched_username' => $username
+        ]
+    ]);
+    exit;
 }
 
 $responseBalance = $balance;
 
-// Bahis işlemi
-if ($method == 'transaction_bet' && $betAmount > 0 && $realUserId > 0 && $realUserId != 999) {
+// ============ BAHİS İŞLEMİ ============
+if ($method === 'transaction_bet' && $betAmount > 0 && $realUserId > 0) {
     if ($betAmount <= $balance) {
         $responseBalance = $balance - $betAmount;
         try {
             $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-            $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
+            $stmt->execute(['balance' => number_format($responseBalance, 2, '.', ''), 'id' => $realUserId]);
         } catch (PDOException $e) {
-            error_log("Bet Update Error: " . $e->getMessage());
+            $responseBalance = $balance;
         }
     }
 }
-// Kazanç işlemi
-elseif ($method == 'transaction_win' && $winAmount > 0 && $realUserId > 0 && $realUserId != 999) {
+// ============ KAZANÇ İŞLEMİ ============
+elseif ($method === 'transaction_win' && $winAmount > 0 && $realUserId > 0) {
     $responseBalance = $balance + $winAmount;
     try {
         $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
+        $stmt->execute(['balance' => number_format($responseBalance, 2, '.', ''), 'id' => $realUserId]);
     } catch (PDOException $e) {
-        error_log("Win Update Error: " . $e->getMessage());
+        $responseBalance = $balance;
     }
 }
-// İade işlemi
-elseif ($method == 'refund' && $betAmount > 0 && $realUserId > 0 && $realUserId != 999) {
+// ============ İADE İŞLEMİ ============
+elseif ($method === 'refund' && $betAmount > 0 && $realUserId > 0) {
     $responseBalance = $balance + $betAmount;
     try {
         $stmt = $pdo->prepare("UPDATE admin SET bakiye = :balance WHERE id = :id");
-        $stmt->execute(['balance' => $responseBalance, 'id' => $realUserId]);
+        $stmt->execute(['balance' => number_format($responseBalance, 2, '.', ''), 'id' => $realUserId]);
     } catch (PDOException $e) {
-        error_log("Refund Update Error: " . $e->getMessage());
+        $responseBalance = $balance;
     }
 }
 
-// Sonuç döndür
 echo json_encode([
     'balance' => number_format($responseBalance, 2, '.', ''),
-    'currency_code' => $currency
+    'currency_code' => $currency,
+    'debug' => [
+        'user_id' => $userId,
+        'real_user_id' => $realUserId,
+        'username' => $foundUser['username'] ?? null,
+        'db_bakiye_raw' => $foundUser['bakiye'] ?? null,
+        'parsed_balance' => $balance,
+        'method' => $method
+    ]
 ]);
 ?>
