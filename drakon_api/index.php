@@ -9,16 +9,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 $host = 'sql206.infinityfree.com';
+$port = 3306;
 $dbname = 'if0_41958317_c4k';
 $dbuser = 'if0_41958317';
-$dbpass = 'fMvWLgjJWSf';
+$dbpass = 'fMvWLgjJWSf'; // phpMyAdmin'den direkt kopyala
 
 try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
+    // Port ile bağlanmayı dene
+    $pdo = new PDO("mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4", $dbuser, $dbpass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
-    echo json_encode(['balance' => '0.00', 'currency_code' => 'TRY', 'error' => 'DB connection failed']);
+    // Hata detayını döndür (debug için)
+    echo json_encode([
+        'balance' => '0.00', 
+        'currency_code' => 'TRY', 
+        'error' => 'DB connection failed',
+        'error_detail' => $e->getMessage(),
+        'host' => $host,
+        'dbname' => $dbname,
+        'user' => $dbuser
+    ]);
     exit;
 }
 
@@ -42,7 +53,7 @@ $realUserId = 0;
 $foundUser = null;
 
 try {
-    // 1. Önce ID ile admin tablosunda ara (DİREKT ID, mapping yok!)
+    // 1. Önce ID ile admin tablosunda ara
     if ($userId > 0) {
         $stmt = $pdo->prepare("SELECT id, bakiye, username, parabirimi FROM admin WHERE id = :id LIMIT 1");
         $stmt->execute(['id' => $userId]);
