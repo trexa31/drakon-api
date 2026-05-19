@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: drakon-api
+    runtime: php
+    buildCommand: ""
+    startCommand: php -S 0.0.0.0:10000
+    plan: free
+    envVars:
+      - key: PHP_VERSION
+        value: 8.2
