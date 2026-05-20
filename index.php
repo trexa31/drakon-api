@@ -243,4 +243,4 @@ try {
 } catch (PDOException $e) {
     echo json_encode(['status' => false, 'error' => 'DATABASE_ERROR']);
 }
-?> 
+?>
